@@ -269,41 +269,40 @@ sequenceDiagram
     participant BLEDevice
     participant ESP32
 
-    User->>MainWindowGUI: Selecciona Actividad (ej. "Caminar") en ComboBox
-    User->>MainWindowGUI: Establece "Número de Segmentos a Colectar"
-    User->>MainWindowGUI: Clic en "Iniciar Recolección de Datos de Entrenamiento"
-    MainWindowGUI->>MainWindowGUI: self.is_collecting_training_data = True
-    MainWindowGUI->>MainWindowGUI: self.current_training_activity_label = "Caminar"
-    MainWindowGUI->>MainWindowGUI: self.collected_segments_count = 0
-    MainWindowGUI->>MainWindowGUI: Limpia buffers de entrenamiento (training_data_buffer, training_labels_buffer)
+    User->>MainWindowGUI: Selecciona Actividad (ej. "Caminar")
+    User->>MainWindowGUI: Define No. Segmentos a Colectar
+    User->>MainWindowGUI: Clic "Iniciar Recolección Entrenamiento"
+    MainWindowGUI->>MainWindowGUI: is_collecting_training_data = true
+    MainWindowGUI->>MainWindowGUI: current_training_activity = "Caminar"
+    MainWindowGUI->>MainWindowGUI: collected_segments = 0
+    MainWindowGUI->>MainWindowGUI: Limpia buffers de entrenamiento
     MainWindowGUI->>MainWindowGUI: Log("Iniciando recolección para 'Caminar'...")
     
-    alt Dispositivo BLE No Conectado o No en Streaming
-        MainWindowGUI->>MainWindowGUI: Log("Error: Conecte y asegúrese que el streaming está activo.")
-        MainWindowGUI->>MainWindowGUI: self.is_collecting_training_data = False
-    else Dispositivo Conectado y Streaming Activo
+    alt BLE No Conectado o Streaming Inactivo
+        MainWindowGUI->>MainWindowGUI: Log("Error: Conectar y activar streaming.")
+        MainWindowGUI->>MainWindowGUI: is_collecting_training_data = false
+    else BLE Conectado y Streaming Activo
         Note over MainWindowGUI, ESP32: Usuario realiza la actividad "Caminar"
-        loop Mientras self.is_collecting_training_data y self.collected_segments_count < target_segments
+        loop Mientras recolecta y segmentos < objetivo
             ESP32-->>BLEDevice: Envía datos (ax, ay, az)
-            BLEDevice-->>MainWindowGUI: data_received_signal(ax, ay, az)
-            MainWindowGUI->>MainWindowGUI: handle_new_data(ax, ay, az)
-            MainWindowGUI->>MainWindowGUI: Añade datos a ax_train_segment_buffer, etc.
+            BLEDevice-->>MainWindowGUI: data_received_signal(datos)
+            MainWindowGUI->>MainWindowGUI: handle_new_data(datos)
+            MainWindowGUI->>MainWindowGUI: Añade datos a buffer de segmento
             
-            alt Suficientes datos para un segmento (FEATURE_WINDOW_SAMPLES)
-                MainWindowGUI->>MainWindowGUI: Extrae segmento de ax_train_segment_buffer, etc.
-                MainWindowGUI->>MainWindowGUI: self.training_data_buffer.append([segment_ax, segment_ay, segment_az])
-                MainWindowGUI->>MainWindowGUI: self.training_labels_buffer.append(self.current_training_activity_label)
-                MainWindowGUI->>MainWindowGUI: self.collected_segments_count += 1
-                MainWindowGUI->>MainWindowGUI: Log(f"Segmento {self.collected_segments_count}/{self.target_segments_to_collect} recolectado.")
-                MainWindowGUI->>MainWindowGUI: Desplaza buffers de segmento para superposición (overlap)
+            alt Segmento completo (FEATURE_WINDOW_SAMPLES)
+                MainWindowGUI->>MainWindowGUI: Extrae segmento del buffer
+                MainWindowGUI->>MainWindowGUI: Almacena segmento y etiqueta
+                MainWindowGUI->>MainWindowGUI: collected_segments++
+                MainWindowGUI->>MainWindowGUI: Log("Segmento X/Y recolectado.")
+                MainWindowGUI->>MainWindowGUI: Desplaza buffer (superposición)
             end
         end
 
-        alt Recolección Completada o Detenida Manualmente
-            User->>MainWindowGUI: (Opcional) Clic en "Detener Recolección"
-            MainWindowGUI->>MainWindowGUI: self.is_collecting_training_data = False
-            MainWindowGUI->>MainWindowGUI: Log("Recolección de datos de entrenamiento finalizada.")
-            MainWindowGUI->>MainWindowGUI: (Opcional) Habilita botón "Guardar Datos de Entrenamiento"
+        alt Recolección Finalizada/Detenida
+            User->>MainWindowGUI: (Opcional) Clic "Detener Recolección"
+            MainWindowGUI->>MainWindowGUI: is_collecting_training_data = false
+            MainWindowGUI->>MainWindowGUI: Log("Recolección de entrenamiento finalizada.")
+            MainWindowGUI->>MainWindowGUI: (Opcional) Habilita "Guardar Datos"
         end
     end
 ```
