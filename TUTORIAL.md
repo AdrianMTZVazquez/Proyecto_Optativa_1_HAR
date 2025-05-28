@@ -426,7 +426,7 @@ sequenceDiagram
         
         alt Suficientes datos en buffer para una ventana de características
             MainWindowGUI->>MainWindowGUI: Prepara ventana de datos (ej. self.ax_buffer, self.ay_buffer, self.az_buffer)
-                                         Nota: Usa los últimos FEATURE_WINDOW_SAMPLES de los buffers principales.
+            Note right of MainWindowGUI: Usa los últimos FEATURE_WINDOW_SAMPLES de los buffers principales.
             MainWindowGUI->>FeatureExtractor: current_features = self.feature_extractor.extract_all_features([[ax_win], [ay_win], [az_win]], self.SAMPLE_RATE)
             FeatureExtractor-->>MainWindowGUI: Devuelve vector de características
             
