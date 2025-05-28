@@ -65,122 +65,393 @@ pip install PyQt5 pyqtgraph bleak numpy
     *   Tenga una característica BLE para recibir comandos (UUID definido como `RX_CHAR_UUID`, ej. 'start', 'stop').
 *   Un adaptador Bluetooth en tu PC compatible con BLE.
 
-### 2.2. Arquitectura de `esp32_mpu6050_monitor.py`
+### 2.2. Funcionamiento Detallado de `esp32_mpu6050_monitor.py` (Diagramas Mermaid)
 
-La aplicación se compone de dos partes principales que trabajan juntas:
-1.  **`MainWindow` (Clase de PyQt5):** Gestiona la interfaz gráfica, incluyendo botones, etiquetas de estado y los gráficos. Inicia las operaciones BLE y actualiza la GUI basándose en las señales recibidas desde `BLEDevice`.
-2.  **`BLEDevice` (Clase de QObject):** Maneja toda la lógica de comunicación BLE de forma asíncrona. Se ejecuta en un bucle de eventos `asyncio` separado para no bloquear la GUI. Emite señales PyQt para notificar a `MainWindow` sobre eventos BLE (conexión, desconexión, datos recibidos, etc.).
+Esta sección detalla el funcionamiento interno de la aplicación `esp32_mpu6050_monitor.py` utilizando diagramas de secuencia Mermaid para ilustrar los flujos clave.
 
-*   **Diagrama Conceptual 1: Arquitectura de `esp32_mpu6050_monitor.py` (draw.io)**
-    *   **Caja Izquierda: "ESP32 con MPU6050"**
-        *   Sub-componentes: Sensor MPU6050, Microcontrolador ESP32, Módulo BLE.
-        *   Funciones: Leer sensor, Empaquetar datos, Transmitir vía BLE.
-    *   **Flecha de Conexión: "Bluetooth Low Energy (BLE)"**
-    *   **Caja Derecha: "PC con `esp32_mpu6050_monitor.py`"**
-        *   **Sub-Caja 1: `MainWindow` (GUI - PyQt5)**
-            *   Elementos: Botones (Conectar, Iniciar/Detener Stream), Gráficos (pyqtgraph), Etiqueta de Estado.
-            *   Responsabilidades: Interacción con el usuario, Iniciar/Detener operaciones BLE, Actualizar gráficos y estado.
-        *   **Sub-Caja 2: `BLEDevice` (Lógica BLE - Bleak, asyncio)**
-            *   Responsabilidades: Escanear dispositivos, Conectar/Desconectar, Manejar notificaciones de datos (`_notification_handler`), Enviar comandos (start/stop stream).
-            *   Comunicación con `MainWindow`: A través de Señales y Slots de PyQt (`connected_signal`, `data_received_signal`, etc.).
-        *   **Sub-Caja 3: Bucle de Eventos `asyncio`**
-            *   Entorno donde se ejecutan las tareas asíncronas de `BLEDevice`.
-            *   `MainWindow` gestiona la ejecución de este bucle de forma no bloqueante.
+#### 2.2.1. Componentes Principales e Inicialización
 
-### 2.3. La Clase `BLEDevice` a Detalle
+Este diagrama muestra la creación e inicialización de los componentes principales de la aplicación: `MainWindow` (la interfaz gráfica) y `BLEDevice` (el manejador de la comunicación BLE), junto con el bucle de eventos `asyncio` que gestiona las operaciones asíncronas.
 
-La clase `BLEDevice` es el corazón de la comunicación BLE. Aquí un desglose de sus métodos y flujo:
+```mermaid
+sequenceDiagram
+    participant User
+    participant PythonScript as esp32_mpu6050_monitor.py
+    participant MainWindow
+    participant BLEDevice
+    participant AsyncioLoop as Bucle asyncio
 
-*   **Inicialización (`__init__`)**
-    *   Recibe el bucle de eventos `asyncio` que será utilizado para las operaciones BLE.
-    *   Inicializa variables de estado como `client` (el cliente Bleak), `is_connected`, `is_streaming`, y `device_address`.
-    *   Define señales PyQt (`connected_signal`, `disconnected_signal`, `status_update_signal`, `data_received_signal`, `streaming_started_signal`, `streaming_stopped_signal`) para comunicarse con la `MainWindow`.
+    User->>PythonScript: Ejecuta el script
+    PythonScript->>+MainWindow: main_window = MainWindow()
+    MainWindow->>MainWindow: setup_ui() (botones, gráficos, etc.)
+    MainWindow->>+BLEDevice: self.ble_device = BLEDevice(self.loop)
+    BLEDevice->>BLEDevice: Inicializa atributos (cliente=None, señales PyQt, etc.)
+    MainWindow->>+AsyncioLoop: self.timer_async = QTimer()
+    MainWindow->>AsyncioLoop: self.timer_async.timeout.connect(self.run_async_tasks)
+    MainWindow->>AsyncioLoop: self.timer_async.start(50)
+    Note right of AsyncioLoop: El bucle asyncio se ejecuta<br/>periódicamente de forma no bloqueante.
+    deactivate AsyncioLoop
+    deactivate BLEDevice
+    deactivate MainWindow
+```
 
-*   **Escaneo (`_scan_for_device`) - Asíncrono**
-    *   Utiliza `BleakScanner.discover()` para encontrar dispositivos BLE cercanos.
-    *   Busca un dispositivo cuyo nombre coincida con `ESP32_DEVICE_NAME`.
-    *   Si lo encuentra, guarda su dirección MAC y la devuelve.
-    *   Emite `status_update_signal` para informar sobre el progreso.
+#### 2.2.2. Proceso de Conexión BLE
 
-*   **Conexión (`connect_async`) - Asíncrono**
-    1.  Si no hay una dirección de dispositivo guardada, llama a `_scan_for_device()`.
-    2.  Crea una instancia de `BleakClient` con la dirección del dispositivo y el bucle `asyncio`.
-    3.  Intenta conectar con `await self.client.connect()`.
-    4.  Si la conexión es exitosa:
-        *   Actualiza `is_connected` a `True`.
-        *   Emite `connected_signal`.
-        *   Automáticamente inicia la escucha de notificaciones en la característica `TX_CHAR_UUID` (donde el ESP32 envía datos), asignando `_notification_handler` como el callback.
-    5.  Maneja excepciones y actualiza el estado/señales en caso de fallo.
+Este diagrama ilustra la secuencia de eventos cuando el usuario inicia una conexión BLE con el ESP32.
 
-*   **Manejador de Notificaciones (`_notification_handler`) - Callback Síncrono**
-    *   Este método es llamado por la librería `Bleak` cada vez que se recibe una notificación (datos) del ESP32 en la característica `TX_CHAR_UUID`.
-    *   Recibe `sender` (identificador de la característica) y `data` (los bytes recibidos).
-    *   Verifica que la longitud de `data` sea la esperada (12 bytes para 3 floats).
-    *   Desempaqueta los bytes usando `struct.unpack('<fff', data)` para obtener los tres valores flotantes (ax, ay, az). El formato `'<fff'` indica little-endian.
-    *   Emite `data_received_signal` con los valores ax, ay, az. Esta señal será capturada por `MainWindow` para actualizar los gráficos.
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindow
+    participant BLEDevice
+    participant AsyncioLoop as Bucle asyncio
+    participant ESP32Device as ESP32 (Periférico BLE)
 
-*   **Inicio de Streaming (`start_streaming_async`) - Asíncrono**
-    *   Verifica que el cliente esté conectado y que el streaming no esté ya activo.
-    *   Escribe el comando `b'start'` en la característica `RX_CHAR_UUID` del ESP32. Esto le indica al ESP32 que comience a enviar datos.
-    *   Actualiza `is_streaming` a `True` y emite `streaming_started_signal`.
+    User->>+MainWindow: Clic en botón "Conectar"
+    MainWindow->>MainWindow: connect_ble_device()
+    MainWindow->>+BLEDevice: self.ble_device.connect()
+    BLEDevice->>BLEDevice: connect() (método síncrono)
+    BLEDevice->>+AsyncioLoop: self.loop.create_task(self.connect_async())
+    AsyncioLoop->>+BLEDevice: Ejecuta connect_async()
+    BLEDevice->>BLEDevice: Emite status_update_signal("Escaneando...")
+    BLEDevice->>ESP32Device: BleakScanner.discover()
+    alt Dispositivo Encontrado
+        ESP32Device-->>BLEDevice: Devuelve dispositivo (dirección MAC)
+        BLEDevice->>BLEDevice: self.device_address = dirección_mac
+        BLEDevice->>BLEDevice: Emite status_update_signal("Conectando a ESP32...")
+        BLEDevice->>+ESP32Device: self.client = BleakClient(dirección_mac)
+        BLEDevice->>ESP32Device: await self.client.connect()
+        ESP32Device-->>BLEDevice: Conexión establecida
+        BLEDevice->>BLEDevice: self.is_connected = True
+        BLEDevice->>ESP32Device: await self.client.start_notify(TX_CHAR_UUID, self._notification_handler)
+        ESP32Device-->>BLEDevice: Notificaciones activadas
+        BLEDevice->>BLEDevice: Emite connected_signal()
+        BLEDevice->>BLEDevice: Emite status_update_signal("Conectado")
+    else Dispositivo No Encontrado o Error de Conexión
+        BLEDevice->>BLEDevice: Emite status_update_signal("Error: No se pudo conectar")
+        BLEDevice->>BLEDevice: self.is_connected = False
+    end
+    deactivate ESP32Device
+    deactivate BLEDevice
+    deactivate AsyncioLoop
+    deactivate MainWindow
+```
 
-*   **Detención de Streaming (`stop_streaming_async`) - Asíncrono**
-    *   Verifica que el cliente esté conectado y que el streaming esté activo.
-    *   Escribe el comando `b'stop'` en la característica `RX_CHAR_UUID` del ESP32.
-    *   Actualiza `is_streaming` a `False` y emite `streaming_stopped_signal`.
+#### 2.2.3. Proceso de Streaming de Datos (Inicio, Recepción y Detención)
 
-*   **Desconexión (`disconnect_async`) - Asíncrono**
-    1.  Si el streaming está activo, primero llama a `stop_streaming_async()`.
-    2.  Detiene las notificaciones en `TX_CHAR_UUID` con `await self.client.stop_notify()`.
-    3.  Desconecta el cliente con `await self.client.disconnect()`.
-    4.  Actualiza los estados `is_connected`, `is_streaming` a `False`.
-    5.  Emite `disconnected_signal`.
-    6.  Limpia la instancia de `self.client`.
+Este diagrama muestra cómo se inicia el flujo de datos desde el ESP32, cómo se reciben y procesan los datos, y cómo se detiene el flujo.
 
-*   **Métodos Públicos Síncronos (`connect`, `disconnect`, `start_streaming`, `stop_streaming`)**
-    *   Estos son los métodos que la `MainWindow` (que corre en el hilo principal de Qt) llama para iniciar las operaciones BLE.
-    *   Internamente, estos métodos usan `self.loop.create_task()` para programar la ejecución de sus contrapartes asíncronas (`connect_async`, `disconnect_async`, etc.) en el bucle de eventos `asyncio`. Esto es crucial para no bloquear la GUI.
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindow
+    participant BLEDevice
+    participant AsyncioLoop as Bucle asyncio
+    participant ESP32Device as ESP32 (Periférico BLE)
 
-*   **Diagrama Conceptual 2: Flujo de Conexión y Recepción de Datos BLE (draw.io)**
-    *   **Columna 1: `MainWindow` (Hilo GUI Qt)**
-        *   Usuario hace clic en "Conectar".
-        *   `MainWindow.connect_ble_device()` es llamado.
-        *   Llama a `BLEDevice.connect()`.
-    *   **Columna 2: `BLEDevice` (Métodos Síncronos de Interfaz)**
-        *   `BLEDevice.connect()`:
-            *   `loop.create_task(self.connect_async())`.
-    *   **Columna 3: `BLEDevice` (Tareas Asíncronas - Bucle `asyncio`)**
-        *   `connect_async()`:
-            *   `_scan_for_device()` (si es necesario).
-            *   `BleakClient.connect()`.
-            *   `BleakClient.start_notify(TX_CHAR_UUID, _notification_handler)`.
-            *   Emite `connected_signal` (hacia `MainWindow`).
-        *   Cuando el ESP32 envía datos:
-            *   `_notification_handler(sender, data)` es llamado por Bleak.
-            *   Desempaqueta datos.
-            *   Emite `data_received_signal(ax, ay, az)` (hacia `MainWindow`).
-    *   **Columna 4: `MainWindow` (Slots/Manejadores de Señales - Hilo GUI Qt)**
-        *   `MainWindow.on_ble_connected()`: Actualiza estado de la GUI.
-        *   `MainWindow.handle_new_data(ax, ay, az)`:
-            *   Añade datos a buffers.
-            *   Dispara actualización de gráficos (ej. con `QTimer`).
+    User->>+MainWindow: Clic en botón "Iniciar Streaming"
+    MainWindow->>MainWindow: start_stop_streaming()
+    MainWindow->>+BLEDevice: self.ble_device.start_streaming()
+    BLEDevice->>BLEDevice: start_streaming() (método síncrono)
+    BLEDevice->>+AsyncioLoop: self.loop.create_task(self.start_streaming_async())
+    AsyncioLoop->>+BLEDevice: Ejecuta start_streaming_async()
+    alt Cliente Conectado y No en Streaming
+        BLEDevice->>+ESP32Device: await self.client.write_gatt_char(RX_CHAR_UUID, b'start')
+        ESP32Device-->>BLEDevice: Comando 'start' recibido
+        BLEDevice->>BLEDevice: self.is_streaming = True
+        BLEDevice->>BLEDevice: Emite streaming_started_signal()
+        BLEDevice->>BLEDevice: Emite status_update_signal("Streaming iniciado")
+    else Cliente No Conectado o Ya en Streaming
+        BLEDevice->>BLEDevice: Emite status_update_signal("Error: No se puede iniciar streaming")
+    end
+    deactivate ESP32Device
+    deactivate BLEDevice
+    deactivate AsyncioLoop
 
-### 2.4. Flujo de Ejecución de la Aplicación
+    Note over ESP32Device, MainWindow: ESP32 comienza a enviar datos periódicamente...
 
-1.  El usuario ejecuta `esp32_mpu6050_monitor.py`.
-2.  Se crea una instancia de `MainWindow`.
-3.  `MainWindow` crea una instancia de `BLEDevice`, pasándole el bucle de eventos `asyncio`.
-4.  `MainWindow` inicia el bucle `asyncio` de forma no bloqueante (usando un `QTimer` para llamar periódicamente a `loop.run_until_complete(asyncio.sleep(0))` o similar, como se implementó en `run_async_tasks`).
-5.  El usuario hace clic en el botón "Conectar" en la GUI.
-6.  `MainWindow` llama a `ble_device.connect()`.
-7.  `BLEDevice.connect()` programa `connect_async()` en el bucle `asyncio`.
-8.  `connect_async()` escanea, se conecta e inicia notificaciones. Las señales actualizan la GUI.
-9.  Cuando el ESP32 envía datos, `_notification_handler` los procesa y emite `data_received_signal`.
-10. `MainWindow` recibe esta señal, actualiza sus buffers de datos y redibuja los gráficos.
-11. El usuario puede hacer clic en "Iniciar/Detener Streaming" para enviar comandos al ESP32 a través de `BLEDevice.start_streaming()` o `BLEDevice.stop_streaming()`.
-12. Al cerrar la aplicación o hacer clic en "Desconectar", se llama a `ble_device.disconnect()` para cerrar la conexión BLE limpiamente.
+    loop Recepción de Datos
+        ESP32Device-->>+BLEDevice: Envía notificación BLE (datos ax, ay, az)
+        BLEDevice->>BLEDevice: _notification_handler(sender, data)
+        BLEDevice->>BLEDevice: (ax, ay, az) = struct.unpack('<fff', data)
+        BLEDevice->>BLEDevice: Emite data_received_signal(ax, ay, az)
+        BLEDevice-->>+MainWindow: data_received_signal(ax, ay, az)
+        MainWindow->>MainWindow: handle_new_data(ax, ay, az)
+        MainWindow->>MainWindow: Actualiza buffers de datos y gráficos
+        deactivate MainWindow
+        deactivate BLEDevice
+    end
+
+    User->>+MainWindow: Clic en botón "Detener Streaming"
+    MainWindow->>MainWindow: start_stop_streaming() (ahora para detener)
+    MainWindow->>+BLEDevice: self.ble_device.stop_streaming()
+    BLEDevice->>BLEDevice: stop_streaming() (método síncrono)
+    BLEDevice->>+AsyncioLoop: self.loop.create_task(self.stop_streaming_async())
+    AsyncioLoop->>+BLEDevice: Ejecuta stop_streaming_async()
+    alt Cliente Conectado y en Streaming
+        BLEDevice->>+ESP32Device: await self.client.write_gatt_char(RX_CHAR_UUID, b'stop')
+        ESP32Device-->>BLEDevice: Comando 'stop' recibido
+        BLEDevice->>BLEDevice: self.is_streaming = False
+        BLEDevice->>BLEDevice: Emite streaming_stopped_signal()
+        BLEDevice->>BLEDevice: Emite status_update_signal("Streaming detenido")
+    else Cliente No Conectado o No en Streaming
+        BLEDevice->>BLEDevice: Emite status_update_signal("Error: No se puede detener streaming")
+    end
+    deactivate ESP32Device
+    deactivate BLEDevice
+    deactivate AsyncioLoop
+    deactivate MainWindow
+```
+
+#### 2.2.4. Proceso de Desconexión BLE
+
+Este diagrama detalla la secuencia de eventos cuando el usuario se desconecta del dispositivo BLE o cierra la aplicación.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindow
+    participant BLEDevice
+    participant AsyncioLoop as Bucle asyncio
+    participant ESP32Device as ESP32 (Periférico BLE)
+
+    alt Usuario Clic en "Desconectar" o Cierra Aplicación
+        User->>+MainWindow: Clic en botón "Desconectar" (o evento de cierre de ventana)
+        MainWindow->>MainWindow: disconnect_ble_device() (o closeEvent())
+        MainWindow->>+BLEDevice: self.ble_device.disconnect()
+        BLEDevice->>BLEDevice: disconnect() (método síncrono)
+        BLEDevice->>+AsyncioLoop: self.loop.create_task(self.disconnect_async())
+        AsyncioLoop->>+BLEDevice: Ejecuta disconnect_async()
+        alt Cliente Conectado
+            alt Streaming Activo
+                BLEDevice->>BLEDevice: Llama internamente a stop_streaming_async()
+                BLEDevice->>+ESP32Device: Envía comando 'stop'
+                ESP32Device-->>BLEDevice: Comando 'stop' recibido
+                BLEDevice->>BLEDevice: self.is_streaming = False
+                deactivate ESP32Device
+            end
+            BLEDevice->>+ESP32Device: await self.client.stop_notify(TX_CHAR_UUID)
+            ESP32Device-->>BLEDevice: Notificaciones detenidas
+            BLEDevice->>ESP32Device: await self.client.disconnect()
+            ESP32Device-->>BLEDevice: Desconexión completada
+            BLEDevice->>BLEDevice: self.is_connected = False
+            BLEDevice->>BLEDevice: self.client = None
+            BLEDevice->>BLEDevice: Emite disconnected_signal()
+            BLEDevice->>BLEDevice: Emite status_update_signal("Desconectado")
+        else Cliente No Conectado
+            BLEDevice->>BLEDevice: Emite status_update_signal("Ya desconectado")
+        end
+        deactivate ESP32Device
+        deactivate BLEDevice
+        deactivate AsyncioLoop
+        deactivate MainWindow
+    end
+```
+    MainWindow->>MainWindow: Actualiza GUI (desconectado)
+    deactivate ESP32
+    deactivate BLEDevice
+    deactivate AsyncioLoop
+    deactivate MainWindow
+```
+
+### 2.3. Reconocimiento de Actividad Humana (HAR) en la Aplicación
+
+La aplicación `esp32_mpu6050_monitor.py` no solo visualiza datos del acelerómetro, sino que también incluye un sistema completo para el Reconocimiento de Actividad Humana (HAR). Esto implica recolectar datos, extraer características, entrenar un modelo de clasificación y utilizarlo para predecir actividades en tiempo real.
+
+#### 2.3.1. Recolección de Datos y Etiquetado para Entrenamiento
+
+Este diagrama muestra cómo el usuario recolecta datos para una actividad específica, que luego se usarán para entrenar el modelo.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindowGUI as "MainWindow (GUI)"
+    participant BLEDevice
+    participant ESP32
+
+    User->>MainWindowGUI: Selecciona Actividad (ej. "Caminar") en ComboBox
+    User->>MainWindowGUI: Establece "Número de Segmentos a Colectar"
+    User->>MainWindowGUI: Clic en "Iniciar Recolección de Datos de Entrenamiento"
+    MainWindowGUI->>MainWindowGUI: self.is_collecting_training_data = True
+    MainWindowGUI->>MainWindowGUI: self.current_training_activity_label = "Caminar"
+    MainWindowGUI->>MainWindowGUI: self.collected_segments_count = 0
+    MainWindowGUI->>MainWindowGUI: Limpia buffers de entrenamiento (training_data_buffer, training_labels_buffer)
+    MainWindowGUI->>MainWindowGUI: Log("Iniciando recolección para 'Caminar'...")
+    
+    alt Dispositivo BLE No Conectado o No en Streaming
+        MainWindowGUI->>MainWindowGUI: Log("Error: Conecte y asegúrese que el streaming está activo.")
+        MainWindowGUI->>MainWindowGUI: self.is_collecting_training_data = False
+    else Dispositivo Conectado y Streaming Activo
+        Note over MainWindowGUI, ESP32: Usuario realiza la actividad "Caminar"
+        loop Mientras self.is_collecting_training_data y self.collected_segments_count < target_segments
+            ESP32-->>BLEDevice: Envía datos (ax, ay, az)
+            BLEDevice-->>MainWindowGUI: data_received_signal(ax, ay, az)
+            MainWindowGUI->>MainWindowGUI: handle_new_data(ax, ay, az)
+            MainWindowGUI->>MainWindowGUI: Añade datos a ax_train_segment_buffer, etc.
+            
+            alt Suficientes datos para un segmento (FEATURE_WINDOW_SAMPLES)
+                MainWindowGUI->>MainWindowGUI: Extrae segmento de ax_train_segment_buffer, etc.
+                MainWindowGUI->>MainWindowGUI: self.training_data_buffer.append([segment_ax, segment_ay, segment_az])
+                MainWindowGUI->>MainWindowGUI: self.training_labels_buffer.append(self.current_training_activity_label)
+                MainWindowGUI->>MainWindowGUI: self.collected_segments_count += 1
+                MainWindowGUI->>MainWindowGUI: Log(f"Segmento {self.collected_segments_count}/{self.target_segments_to_collect} recolectado.")
+                MainWindowGUI->>MainWindowGUI: Desplaza buffers de segmento para superposición (overlap)
+            end
+        end
+
+        alt Recolección Completada o Detenida Manualmente
+            User->>MainWindowGUI: (Opcional) Clic en "Detener Recolección"
+            MainWindowGUI->>MainWindowGUI: self.is_collecting_training_data = False
+            MainWindowGUI->>MainWindowGUI: Log("Recolección de datos de entrenamiento finalizada.")
+            MainWindowGUI->>MainWindowGUI: (Opcional) Habilita botón "Guardar Datos de Entrenamiento"
+        end
+    end
+```
+
+#### 2.3.2. Extracción de Características
+
+Una vez recolectados los segmentos de datos crudos, se extraen características significativas que el modelo de ML pueda utilizar.
+
+```mermaid
+sequenceDiagram
+    participant MainWindowGUI as "MainWindow (GUI)"
+    participant FeatureExtractor
+    
+    MainWindowGUI->>MainWindowGUI: (Después de recolectar datos o al cargar datos)
+    MainWindowGUI->>FeatureExtractor: features_list = self.feature_extractor.extract_all_features(self.training_data_buffer, self.SAMPLE_RATE)
+    FeatureExtractor->>FeatureExtractor: Para cada segmento en training_data_buffer:
+    FeatureExtractor->>FeatureExtractor:  window_features = []
+    FeatureExtractor->>FeatureExtractor:  time_features = extract_time_domain_features(segmento)
+    FeatureExtractor->>FeatureExtractor:  freq_features = extract_frequency_domain_features(segmento, sample_rate)
+    FeatureExtractor->>FeatureExtractor:  window_features.extend(time_features)
+    FeatureExtractor->>FeatureExtractor:  window_features.extend(freq_features)
+    FeatureExtractor-->>MainWindowGUI: Devuelve lista de vectores de características (features_list)
+    MainWindowGUI->>MainWindowGUI: self.X_train = np.array(features_list)
+    MainWindowGUI->>MainWindowGUI: self.y_train = np.array(self.training_labels_buffer)
+    MainWindowGUI->>MainWindowGUI: Log("Características extraídas de los datos recolectados.")
+```
+
+#### 2.3.3. Entrenamiento del Modelo de Clasificación
+
+Con las características extraídas (X_train) y sus etiquetas (y_train), se entrena un modelo de clasificación.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindowGUI as "MainWindow (GUI)"
+    participant ActivityClassifier
+    participant StandardScaler as "sklearn.preprocessing.StandardScaler"
+
+    User->>MainWindowGUI: Selecciona tipo de modelo (SVM, RandomForest, etc.) en ComboBox
+    User->>MainWindowGUI: Ajusta parámetros del modelo (si aplica)
+    User->>MainWindowGUI: Clic en botón "Entrenar Modelo"
+    
+    alt Datos de Entrenamiento No Disponibles
+        MainWindowGUI->>MainWindowGUI: Log("Error: Recolecte o cargue datos de entrenamiento primero.")
+    else Datos de Entrenamiento Disponibles (self.X_train, self.y_train)
+        MainWindowGUI->>MainWindowGUI: Log(f"Iniciando entrenamiento del modelo {self.classifier.model_type}...")
+        MainWindowGUI->>ActivityClassifier: self.classifier.model_type = tipo_seleccionado
+        MainWindowGUI->>ActivityClassifier: self.classifier.train(self.X_train, self.y_train)
+        ActivityClassifier->>StandardScaler: scaler = StandardScaler()
+        ActivityClassifier->>StandardScaler: X_scaled = scaler.fit_transform(X_train)
+        ActivityClassifier->>ActivityClassifier: Crea instancia del modelo sklearn (ej. SVC())
+        ActivityClassifier->>ActivityClassifier: model.fit(X_scaled, y_train)
+        ActivityClassifier->>ActivityClassifier: self.scaler = scaler
+        ActivityClassifier->>ActivityClassifier: self.model = model
+        ActivityClassifier-->>MainWindowGUI: Entrenamiento completado
+        MainWindowGUI->>MainWindowGUI: Log("Modelo entrenado exitosamente.")
+        MainWindowGUI->>MainWindowGUI: (Opcional) Evalúa el modelo (accuracy, confusion matrix) y muestra resultados.
+        MainWindowGUI->>MainWindowGUI: Habilita botón "Guardar Modelo"
+    end
+```
+
+#### 2.3.4. Guardado y Carga del Modelo Entrenado
+
+Los modelos entrenados pueden guardarse para uso futuro y cargarse al iniciar la aplicación.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindowGUI as "MainWindow (GUI)"
+    participant ActivityClassifier
+
+    alt Guardar Modelo
+        User->>MainWindowGUI: Clic en "Guardar Modelo"
+        MainWindowGUI->>MainWindowGUI: Abre diálogo para seleccionar ruta de archivo (ej. "activity_model.pkl")
+        alt Usuario selecciona archivo y confirma
+            MainWindowGUI->>ActivityClassifier: self.classifier.save(ruta_archivo)
+            ActivityClassifier->>ActivityClassifier: Abre archivo en modo binario escritura ('wb')
+            ActivityClassifier->>ActivityClassifier: pickle.dump({'model': self.model, 'scaler': self.scaler, 'model_type': self.model_type}, file)
+            ActivityClassifier-->>MainWindowGUI: Modelo guardado
+            MainWindowGUI->>MainWindowGUI: Log(f"Modelo guardado en {ruta_archivo}")
+        else Usuario cancela
+            MainWindowGUI->>MainWindowGUI: Log("Guardado de modelo cancelado.")
+        end
+    end
+
+    alt Cargar Modelo (al inicio o manualmente)
+        User->>MainWindowGUI: (Opcional) Clic en "Cargar Modelo"
+        MainWindowGUI->>MainWindowGUI: (Al inicio) Intenta cargar "activity_model.pkl" por defecto
+        MainWindowGUI->>MainWindowGUI: (Manual) Abre diálogo para seleccionar archivo de modelo
+        alt Usuario selecciona archivo y confirma (o archivo por defecto existe)
+            MainWindowGUI->>ActivityClassifier: self.classifier.load(ruta_archivo)
+            ActivityClassifier->>ActivityClassifier: Abre archivo en modo binario lectura ('rb')
+            ActivityClassifier->>ActivityClassifier: data = pickle.load(file)
+            ActivityClassifier->>ActivityClassifier: self.model = data['model']
+            ActivityClassifier->>ActivityClassifier: self.scaler = data['scaler']
+            ActivityClassifier->>ActivityClassifier: self.model_type = data.get('model_type', 'desconocido')
+            ActivityClassifier-->>MainWindowGUI: Modelo cargado
+            MainWindowGUI->>MainWindowGUI: Log(f"Modelo '{self.classifier.model_type}' cargado desde {ruta_archivo}")
+        else Archivo no existe o usuario cancela
+            MainWindowGUI->>MainWindowGUI: Log("No se cargó el modelo.")
+        end
+    end
+```
+
+#### 2.3.5. Predicción/Clasificación en Tiempo Real
+
+Una vez que hay un modelo cargado o entrenado, la aplicación puede clasificar la actividad en tiempo real a medida que llegan nuevos datos del sensor.
+
+```mermaid
+sequenceDiagram
+    participant ESP32
+    participant BLEDevice
+    participant MainWindowGUI as "MainWindow (GUI)"
+    participant FeatureExtractor
+    participant ActivityClassifier
+
+    Note over ESP32, MainWindowGUI: Streaming de datos activo y modelo HAR cargado/entrenado.
+    
+    loop Actualización Periódica (Plot Timer)
+        MainWindowGUI->>MainWindowGUI: update_plots_and_classification()
+        
+        alt Suficientes datos en buffer para una ventana de características
+            MainWindowGUI->>MainWindowGUI: Prepara ventana de datos (ej. self.ax_buffer, self.ay_buffer, self.az_buffer)
+                                         Nota: Usa los últimos FEATURE_WINDOW_SAMPLES de los buffers principales.
+            MainWindowGUI->>FeatureExtractor: current_features = self.feature_extractor.extract_all_features([[ax_win], [ay_win], [az_win]], self.SAMPLE_RATE)
+            FeatureExtractor-->>MainWindowGUI: Devuelve vector de características
+            
+            alt Características extraídas y modelo disponible
+                MainWindowGUI->>ActivityClassifier: predicted_activity = self.classifier.predict(current_features)
+                ActivityClassifier->>ActivityClassifier: self.scaler.transform(current_features)
+                ActivityClassifier->>ActivityClassifier: self.model.predict(scaled_features)
+                ActivityClassifier-->>MainWindowGUI: Devuelve etiqueta de actividad predicha (ej. "Caminar")
+                MainWindowGUI->>MainWindowGUI: Actualiza etiqueta de "Actividad Predicha" en la GUI
+            else Modelo no disponible o error
+                MainWindowGUI->>MainWindowGUI: Muestra "N/A" o "Error" en etiqueta de actividad.
+            end
+        end
+        MainWindowGUI->>MainWindowGUI: Actualiza gráficos (datos crudos, FFT)
+    end
+
+    ESP32-->>BLEDevice: Envía datos (ax, ay, az)
+    BLEDevice-->>MainWindowGUI: data_received_signal(ax, ay, az)
+    MainWindowGUI->>MainWindowGUI: handle_new_data(ax, ay, az)
+    MainWindowGUI->>MainWindowGUI: Añade datos a ax_buffer, ay_buffer, az_buffer (usados por el loop de actualización)
+```
 
 ---
+
 
 ## 3. Contribuyendo al Proyecto (Opcional, si es un equipo)
 
