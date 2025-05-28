@@ -447,7 +447,7 @@ sequenceDiagram
 ---
 
 
-## 3. Contribuyendo al Proyecto (Opcional, si es un equipo)
+## 3. Contribuyendo al Proyecto 
 
 Si quieres que otros contribuyan:
 
