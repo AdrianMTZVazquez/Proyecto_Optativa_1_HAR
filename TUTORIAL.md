@@ -244,14 +244,9 @@ sequenceDiagram
         deactivate ESP32Device
         deactivate BLEDevice
         deactivate AsyncioLoop
+        MainWindow->>MainWindow: Actualiza GUI (desconectado)
         deactivate MainWindow
     end
-```
-    MainWindow->>MainWindow: Actualiza GUI (desconectado)
-    deactivate ESP32
-    deactivate BLEDevice
-    deactivate AsyncioLoop
-    deactivate MainWindow
 ```
 
 ### 2.3. Reconocimiento de Actividad Humana (HAR) en la Aplicación
