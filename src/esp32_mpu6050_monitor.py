@@ -39,7 +39,7 @@ except ImportError:
     print("scikit-learn no está disponible. La clasificación será simulada.")
 
 # Activities to classify
-ACTIVITIES = ["Quieto", "Caminar", "Correr", "Agacharse", "Saltar"]
+ACTIVITIES = ["Squat", "Sit-Up", "Push-Up", "Jump"]
 
 class FeatureExtractor:
     """Clase para extraer características de señales de aceleración para HAR."""
@@ -408,7 +408,7 @@ class BLEDevice(QObject):
     connected_signal = pyqtSignal()
     disconnected_signal = pyqtSignal()
     status_update_signal = pyqtSignal(str)
-    data_received_signal = pyqtSignal(float, float, float)
+    data_received_signal = pyqtSignal(float, float, float, float, float, float)
     streaming_started_signal = pyqtSignal()
     streaming_stopped_signal = pyqtSignal()
 
@@ -485,9 +485,9 @@ class BLEDevice(QObject):
 
 
     def _notification_handler(self, sender, data):
-        if len(data) == 12:  # 3 floats * 4 bytes each
-            ax, ay, az = struct.unpack('<fff', data)  # Especificar little-endian
-            self.data_received_signal.emit(ax, ay, az)
+        if len(data) == 24:  # 6 floats * 4 bytes each
+            ax, ay, az, gx, gy, gz = struct.unpack('<ffffff', data)  # Especificar little-endian
+            self.data_received_signal.emit(ax, ay, az, gx, gy, gz)
 
     async def start_streaming_async(self):
         if self.client and self.is_connected and not self.is_streaming:
@@ -577,12 +577,18 @@ class MainWindow(QMainWindow):
         self.ax_buffer = deque(maxlen=self.DATA_BUFFER_MAXLEN)
         self.ay_buffer = deque(maxlen=self.DATA_BUFFER_MAXLEN)
         self.az_buffer = deque(maxlen=self.DATA_BUFFER_MAXLEN)
+        self.gx_buffer = deque(maxlen=self.DATA_BUFFER_MAXLEN)
+        self.gy_buffer = deque(maxlen=self.DATA_BUFFER_MAXLEN)
+        self.gz_buffer = deque(maxlen=self.DATA_BUFFER_MAXLEN)
         
         # Data for plotting (numpy arrays derived from deques)
         self.time_plot_data_x = np.linspace(-self.PLOT_TIME_WINDOW_S, 0, self.PLOT_MAX_POINTS)
         self.ax_plot_data = np.zeros(self.PLOT_MAX_POINTS)
         self.ay_plot_data = np.zeros(self.PLOT_MAX_POINTS)
         self.az_plot_data = np.zeros(self.PLOT_MAX_POINTS)
+        self.gx_plot_data = np.zeros(self.PLOT_MAX_POINTS)
+        self.gy_plot_data = np.zeros(self.PLOT_MAX_POINTS)
+        self.gz_plot_data = np.zeros(self.PLOT_MAX_POINTS)
 
         # FFT plot data
         self.fft_freq_data = np.array([]) 
@@ -664,12 +670,15 @@ class MainWindow(QMainWindow):
         self.plot_widget_time = pg.PlotWidget(title="Acelerómetro (Tiempo Real)")
         self.plot_widget_time.setBackground('w')
         self.plot_widget_time.addLegend()
-        self.plot_widget_time.setYRange(-2.5, 2.5, padding=0.1) # MPU6050 typically +/- 2g to 16g
+        self.plot_widget_time.setYRange(-10, 10, padding=0.1) # MPU6050 typically +/- 2g to 16g
         self.plot_widget_time.setXRange(-self.PLOT_TIME_WINDOW_S, 0, padding=0.01)
         self.plot_widget_time.showGrid(x=True, y=True)
         self.curve_ax_time = self.plot_widget_time.plot(self.time_plot_data_x, self.ax_plot_data, pen='r', name='Accel X')
         self.curve_ay_time = self.plot_widget_time.plot(self.time_plot_data_x, self.ay_plot_data, pen='g', name='Accel Y')
         self.curve_az_time = self.plot_widget_time.plot(self.time_plot_data_x, self.az_plot_data, pen='b', name='Accel Z')
+        self.curve_gx_time = self.plot_widget_time.plot(self.time_plot_data_x, self.gx_plot_data, pen='r', name='Gyro X')
+        self.curve_gy_time = self.plot_widget_time.plot(self.time_plot_data_x, self.gy_plot_data, pen='g', name='Gyro Y')
+        self.curve_gz_time = self.plot_widget_time.plot(self.time_plot_data_x, self.gz_plot_data, pen='b', name='Gyro Z')
         plots_layout.addWidget(self.plot_widget_time, 0, 0) # Row 0, Col 0
 
         # FFT Plot
@@ -719,7 +728,7 @@ class MainWindow(QMainWindow):
             try:
                 self.csv_file_object = open(self.current_csv_file_path, 'w', newline='')
                 self.csv_writer = csv.writer(self.csv_file_object)
-                self.csv_writer.writerow(['timestamp', 'ax', 'ay', 'az', 'activity_label']) # Header
+                self.csv_writer.writerow(['timestamp', 'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'activity_label']) # Header
                 self.is_csv_logging_active = True
                 self.btn_toggle_csv_log.setText("Detener Registro CSV")
                 self.csv_log_status_label.setText(f"Registrando en: {os.path.basename(self.current_csv_file_path)}")
@@ -1034,6 +1043,9 @@ class MainWindow(QMainWindow):
         self.ax_buffer.clear()
         self.ay_buffer.clear()
         self.az_buffer.clear()
+        self.gx_buffer.clear()
+        self.gy_buffer.clear()
+        self.gz_buffer.clear()
         self.ax_plot_data.fill(0)
         self.ay_plot_data.fill(0)
         self.az_plot_data.fill(0)
@@ -1054,32 +1066,30 @@ class MainWindow(QMainWindow):
         self.log_status("Streaming de datos detenido.")
 
     def update_time_plot(self):
-        # Copy last PLOT_MAX_POINTS from deques for plotting
-        # If deque has fewer than PLOT_MAX_POINTS, pad with zeros at the beginning
-        len_ax = len(self.ax_buffer)
-        if len_ax > 0:
-            start_idx = max(0, len_ax - self.PLOT_MAX_POINTS)
-            self.ax_plot_data[-len_ax+start_idx:] = list(self.ax_buffer)[start_idx:]
-            if len_ax < self.PLOT_MAX_POINTS:
-                 self.ax_plot_data[:-len_ax] = 0 # Zero pad beginning
+        self._update_single_plot(self.ax_buffer, self.ax_plot_data)
+        self._update_single_plot(self.ay_buffer, self.ay_plot_data)
+        self._update_single_plot(self.az_buffer, self.az_plot_data)
+        self._update_single_plot(self.gx_buffer, self.gx_plot_data)
+        self._update_single_plot(self.gy_buffer, self.gy_plot_data)
+        self._update_single_plot(self.gz_buffer, self.gz_plot_data)
 
-        len_ay = len(self.ay_buffer)
-        if len_ay > 0:
-            start_idx = max(0, len_ay - self.PLOT_MAX_POINTS)
-            self.ay_plot_data[-len_ay+start_idx:] = list(self.ay_buffer)[start_idx:]
-            if len_ay < self.PLOT_MAX_POINTS:
-                self.ay_plot_data[:-len_ay] = 0
+        self._update_curves()
 
-        len_az = len(self.az_buffer)
-        if len_az > 0:
-            start_idx = max(0, len_az - self.PLOT_MAX_POINTS)
-            self.az_plot_data[-len_az+start_idx:] = list(self.az_buffer)[start_idx:]
-            if len_az < self.PLOT_MAX_POINTS:
-                self.az_plot_data[:-len_az] = 0
+    def _update_single_plot(self, buffer, plot_data):
+        length = len(buffer)
+        if length > 0:
+            start = max(0, length - self.PLOT_MAX_POINTS)
+            plot_data[-length + start:] = list(buffer)[start:]
+            if length < self.PLOT_MAX_POINTS:
+                plot_data[:self.PLOT_MAX_POINTS - length] = 0
 
+    def _update_curves(self):
         self.curve_ax_time.setData(self.time_plot_data_x, self.ax_plot_data)
         self.curve_ay_time.setData(self.time_plot_data_x, self.ay_plot_data)
         self.curve_az_time.setData(self.time_plot_data_x, self.az_plot_data)
+        self.curve_gx_time.setData(self.time_plot_data_x, self.gx_plot_data)
+        self.curve_gy_time.setData(self.time_plot_data_x, self.gy_plot_data)
+        self.curve_gz_time.setData(self.time_plot_data_x, self.gz_plot_data)
 
     def update_fft_plot(self):
         if len(self.ax_buffer) >= self.FFT_WINDOW_SIZE_SAMPLES:
@@ -1189,12 +1199,15 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-    @pyqtSlot(float, float, float)
-    def handle_new_data(self, ax, ay, az):
+    @pyqtSlot(float, float, float, float, float, float)
+    def handle_new_data(self, ax, ay, az, gx, gy, gz):
         # print(f"[DATA] ax={ax:.2f}, ay={ay:.2f}, az={az:.2f}")
         self.ax_buffer.append(ax)
         self.ay_buffer.append(ay)
         self.az_buffer.append(az)
+        self.gx_buffer.append(gx)
+        self.gy_buffer.append(gy)
+        self.gz_buffer.append(gz)
 
         # If collecting training data, add to specific training buffers
         if self.is_collecting_training_data:
@@ -1209,7 +1222,7 @@ class MainWindow(QMainWindow):
             current_timestamp = time.time() # Using time.time() for simplicity
             current_activity_label_for_log = self.activity_combo_train.currentText() # Get from training tab
             try:
-                self.csv_writer.writerow([current_timestamp, ax, ay, az, current_activity_label_for_log])
+                self.csv_writer.writerow([current_timestamp, ax, ay, az, gx, gy, gz, current_activity_label_for_log])
             except Exception as e:
                 # self.log_status(f"Error escribiendo en CSV: {e}") # This can be very verbose
                 # Consider a flag to stop logging or a counter for errors
@@ -1224,24 +1237,39 @@ class MainWindow(QMainWindow):
             self.ax_plot_data.fill(0)
             self.ay_plot_data.fill(0)
             self.az_plot_data.fill(0)
+            self.gx_plot_data.fill(0)
+            self.gy_plot_data.fill(0)
+            self.gz_plot_data.fill(0)
         else:
             ax_src = np.array(self.ax_buffer)
             ay_src = np.array(self.ay_buffer)
             az_src = np.array(self.az_buffer)
+            gx_src = np.array(self.gx_buffer)
+            gy_src = np.array(self.gy_buffer)
+            gz_src = np.array(self.gz_buffer)
 
             points_to_copy = min(len_ax, self.PLOT_MAX_POINTS)
             
             self.ax_plot_data.fill(0)
             self.ay_plot_data.fill(0)
             self.az_plot_data.fill(0)
+            self.gx_plot_data.fill(0)
+            self.gy_plot_data.fill(0)
+            self.gz_plot_data.fill(0)
 
             self.ax_plot_data[-points_to_copy:] = ax_src[-points_to_copy:]
             self.ay_plot_data[-points_to_copy:] = ay_src[-points_to_copy:]
             self.az_plot_data[-points_to_copy:] = az_src[-points_to_copy:]
+            self.gx_plot_data[-points_to_copy:] = gx_src[-points_to_copy:]
+            self.gy_plot_data[-points_to_copy:] = gy_src[-points_to_copy:]
+            self.gz_plot_data[-points_to_copy:] = gz_src[-points_to_copy:]
 
         self.curve_ax_time.setData(self.time_plot_data_x, self.ax_plot_data)
         self.curve_ay_time.setData(self.time_plot_data_x, self.ay_plot_data)
         self.curve_az_time.setData(self.time_plot_data_x, self.az_plot_data)
+        self.curve_gx_time.setData(self.time_plot_data_x, self.gx_plot_data)
+        self.curve_gy_time.setData(self.time_plot_data_x, self.gy_plot_data)
+        self.curve_gz_time.setData(self.time_plot_data_x, self.gz_plot_data)
 
     def update_fft_plot(self):
         if len(self.ax_buffer) >= self.FFT_WINDOW_SIZE_SAMPLES:

@@ -76,6 +76,24 @@ def read_accel():
         print("Error leyendo MPU6050:", e)
         return (0.0, 0.0, 0.0)
 
+def read_gyro():
+    try:
+        # Dirección de inicio para los datos del giroscopio (Gyro XOUT_H)
+        data = i2c.readfrom_mem(MPU6050_ADDR, 0x43, 6)
+        gx_raw = struct.unpack('>h', data[0:2])[0]
+        gy_raw = struct.unpack('>h', data[2:4])[0]
+        gz_raw = struct.unpack('>h', data[4:6])[0]
+        
+        # Convertir a grados/segundo (sensibilidad por defecto: ±250 °/s)
+        # 131 LSB/(°/s) según la hoja de datos del MPU6050
+        gyro_x = gx_raw / 131.0
+        gyro_y = gy_raw / 131.0
+        gyro_z = gz_raw / 131.0
+        return (gyro_x, gyro_y, gyro_z)
+    except Exception as e:
+        print("Error leyendo giroscopio:", e)
+        return (0.0, 0.0, 0.0)
+
 # --- Inicialización BLE ---
 ble = bluetooth.BLE()
 if not ble.active():
@@ -159,6 +177,8 @@ while True:
     if client_conn_handle is not None and is_streaming and mpu_initialized:
         try:
             accel = read_accel()
+            gyro = read_gyro()
+            print(f"Accel: {accel}, Gyro: {gyro}")
             time.sleep(0.05)  # Añadir delay para reducir la carga en el bus I2C
             data_packet = struct.pack('<fff', *accel)
             ble.gatts_notify(client_conn_handle, tx_handle, data_packet)
